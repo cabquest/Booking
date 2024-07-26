@@ -41,7 +41,7 @@ class Booking(db.Model):
     to_location = db.Column(db.String(100), nullable=False)
     total_km = db.Column(db.Float, nullable=False)
     vehicle_type = db.Column(db.String(20), nullable=False)
-    status = db.Column(db.String(30), nullable=False)
+    status = db.Column(db.String(50), nullable=False)
     fare = db.Column(DECIMAL(10, 2), nullable=False)
     user = db.relationship('User', back_populates='bookings')
     driver = db.relationship('Driver', back_populates='bookings')

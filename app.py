@@ -53,6 +53,7 @@ def create_app():
     @app.route('/riderequest', methods=['POST'])
     def riderequest():
         data = request.get_json()
+        print(data)
         if data['email'] is None:
             return jsonify({'message':'user not found'})
         
@@ -315,8 +316,36 @@ def create_app():
         driver = Driver.query.filter_by(email = data['email']).first()
         booking = Booking.query.filter(Booking.driver_id == driver.id , Booking.status == 'accepted by driver').first()
         booking.status = 'ride finished'
+        driver.status = 'active'
         db.session.commit()
         return jsonify({'message':'success'})
+    
+    @app.route('/cancelledbydriver', methods = ["POST"])
+    def cancelledbydriver():
+        data = request.get_json()
+        driver = Driver.query.filter_by(email = data['email']).first()
+        print(driver.driver_id)
+        booking = Booking.query.filter(Booking.driver_id == driver.driver_id, Booking.status == 'accepted by driver').first()
+        print(booking)
+        cancelledride = CancelledRide(reason = data['reason'], booking_id = booking.id, driver_id = driver.driver_id)
+        driver.status = 'active'
+        booking.status = 'cancelled by driver after accepting'
+        db.session.add(cancelledride)
+        db.session.commit()
+        return jsonify({'message':'ok','driverid':driver.id})
+
+    @app.route('/cancelfromuser', methods = ["POST"])
+    def cancelfromuser():
+        data = request.get_json()
+        user = User.query.filter_by(email = data['email']).first()
+        booking = Booking.query.filter(Booking.user_id == user.user_id, Booking.status == 'accepted by driver').first()
+        cancelledride = CancelledRide(reason = data['reason'], booking_id = booking.id, driver_id = booking.driver_id)
+        driver = Driver.query.filter_by(driver_id = booking.driver_id).first()
+        driver.status = 'active'
+        booking.status = 'cancelled by user after accepting'
+        db.session.add(cancelledride)
+        db.session.commit()
+        return jsonify({'message':'ok','driverid':driver.driver_id})
             
     return app
 
