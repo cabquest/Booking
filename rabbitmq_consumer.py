@@ -5,14 +5,17 @@ import json
 from models import db, User, Driver
 from app import create_app
 
+
 app = create_app()
 app.app_context().push()
+
 
 rabbitmq_host = 'localhost'  
 rabbitmq_port = 5672
 rabbitmq_user = 'guest'  
 rabbitmq_password = 'guest'  
 rabbitmq_queue = 'Booking'
+
 
 def get_rabbitmq_connection():
     credentials = pika.PlainCredentials(rabbitmq_user, rabbitmq_password)
@@ -59,6 +62,7 @@ def callback(ch, method, properties, body):
         user.status = data['role']
         db.session.commit()
         print('committed')
+
 
 def start_consumer():
     try:

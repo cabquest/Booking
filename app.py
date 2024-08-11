@@ -1,51 +1,60 @@
-from flask import Flask, jsonify, json, request
+from flask import Flask, jsonify, json, request, current_app
 from models import db, User, Driver, Booking, CancelledRide, Bookingdetails
 from flask_migrate import Migrate
 from flask_cors import CORS
 from flask_socketio import SocketIO, emit, join_room, leave_room
 from geopy.distance import geodesic
 import random, requests, eventlet, os, urllib.parse
-from sqlalchemy import desc, or_, not_, and_
+from sqlalchemy import desc, or_, not_, and_, func
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
 from sqlalchemy.exc import SQLAlchemyError
+import calendar
+import eventlet
+import eventlet.wsgi
 
 load_dotenv()
 
 def create_app():
     app = Flask(__name__)
-
-    # app.config['SQLALCHEMY_DATABASE_URI'] = 'mysql+pymysql://booking:booking@host.docker.internal:33066/booking'
     app.config['SQLALCHEMY_DATABASE_URI'] = 'mysql+pymysql://booking:booking@localhost:33066/booking'
+    # app.config['SQLALCHEMY_DATABASE_URI'] = 'mysql+pymysql://booking:booking@host.docker.internal:33066/booking'
     app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 
     migrate = Migrate(app, db)
     db.init_app(app)
     CORS(app, supports_credentials=True)
     GOOGLE_MAPS_API_KEY = os.getenv('GOOGLE_MAPS_API_KEY')
-
     socketio = SocketIO(app, cors_allowed_origins="*",  async_mode='eventlet')
-
-                                                                                   
 
     @app.route('/get_driver',methods = ['POST'])
     def get_driver():
         data = request.get_json()
-        distinct_vehicle_types = Driver.query.with_entities(Driver.vehicle.distinct()).all()
+        distinct_vehicle_types = (
+        db.session.query(Driver.vehicle)
+        .filter(Driver.status == 'active')
+        .distinct()
+        .all()
+        )
         vehicle_types_list = [item[0] for item in distinct_vehicle_types]
+        print(vehicle_types_list)
+        vehicle_type_obj = [{'id':1, 'type': vehicle_type} for vehicle_type in vehicle_types_list]
+        print(vehicle_type_obj)
         print(data['origin']['query'])
         print(data['destination']['query'])
-        return jsonify({'message':'ok','vehicles':vehicle_types_list})
+        return jsonify({'message':'ok','vehicles':vehicle_type_obj})
 
     @app.route('/getprice',methods = ["POST"])
     def get_price():
-        data = request.get_json()
-        price = Driver.query.filter_by(vehicle = data['vehicle']).first()
-        total = price.base_price
-        if data['distance'] > price.base_distance_KM:
-            total = float(price.base_price)+(float(price.price_per_km) * (data['distance']-price.base_distance_KM))
-            
-        return jsonify({'message':'ok','total':total+30})
+        try:
+            data = request.get_json()
+            price = Driver.query.filter_by(vehicle = data['vehicle']).first()
+            total = price.base_price
+            if data['distance'] > price.base_distance_KM:
+                total = float(price.base_price)+(float(price.price_per_km) * (data['distance']-price.base_distance_KM))
+            return jsonify({'message':'ok','total':total+30})
+        except:
+            return jsonify({'message':'error'})
 
     def calculate_distance(user_coords, driver_coords):
         return geodesic(user_coords, driver_coords).kilometers
@@ -59,18 +68,21 @@ def create_app():
         
         user_coords = (data['latitude'], data['longitude'])
         vehicle_type = data['vehicle']
+        print(vehicle_type)
         drivers = Driver.query.filter_by(vehicle=vehicle_type, status='active').all()
-        user = User.query.filter_by(email = data['email']).first()
-        print(user)
 
         eligible_drivers = []
         for driver in drivers:
             driver_coords = (driver.latitude, driver.longitude)
             dist_km = calculate_distance(user_coords, driver_coords)
+            print('sdhaskfhasji',dist_km)
             if dist_km <= 20:
                 eligible_drivers.append(driver)
                 
         if eligible_drivers:
+            print(data['email'])
+            user = User.query.filter_by(email = data['email']).first()
+            print(user)
             selected_driver = eligible_drivers[0]
             socketio.emit('notification', {
                 'message': 'New Booking Created!',
@@ -126,15 +138,18 @@ def create_app():
     
     @app.route('/getnotifications',methods = ['POST'])
     def getnotifications():
-        data = request.get_json()
-        print(data)
-        driver = Driver.query.filter_by(email = data['email']).first()
-        booking = Booking.query.filter_by(driver_id = driver.id).order_by(desc(Booking.id)).all()
-        notification = []
-        for i in booking:
-            notification.append({'id':i.id,'time':i.scheduled_time,'user_id':i.user_id, 'driver_id':i.driver_id, 'date':i.scheduled_date, 'from':i.from_location, 'to':i.to_location, 'km':i.total_km, 'status':i.status, 'fare':i.fare})
-        print(notification)
-        return jsonify({'message':notification})
+        try:
+            data = request.get_json()
+            print(data)
+            driver = Driver.query.filter_by(email = data['email']).first()
+            booking = Booking.query.filter_by(driver_id = driver.id).order_by(desc(Booking.id)).all()
+            notification = []
+            for i in booking:
+                notification.append({'id':i.id,'time':i.scheduled_time,'user_id':i.user_id, 'driver_id':i.driver_id, 'date':i.scheduled_date, 'from':i.from_location, 'to':i.to_location, 'km':i.total_km, 'status':i.status, 'fare':i.fare})
+            print(notification)
+            return jsonify({'message':notification})
+        except:
+            return jsonify({'message':'error'})
 
     @app.route('/cancelrequest',methods = ["POST"])
     def cancelrequest():
@@ -153,7 +168,7 @@ def create_app():
         db.session.commit() 
    
         try:
-            ten_minutes_ago = datetime.utcnow() - timedelta(minutes=15)
+            ten_minutes_ago = datetime.utcnow() - timedelta(minutes=5)
             bookings = Booking.query.filter(
                 Booking.user_id == user.id,
                 Booking.status == 'cancelled by driver',
@@ -164,7 +179,8 @@ def create_app():
             drivers = Driver.query.filter(
                 and_(
                     not_(Driver.id.in_(cancelled_drivers)),
-                    Driver.status == 'active'
+                    Driver.status == 'active',
+                    Driver.vehicle == booking.vehicle_type
                 )
             ).all()
             print(drivers)
@@ -257,10 +273,13 @@ def create_app():
     
     @app.route('/getpending', methods = ["POST"])
     def getpending():
-        data = request.get_json()
-        driver = Driver.query.filter_by(email = data['email']).first()
-        booking = Booking.query.filter_by(driver_id = driver.id, status = 'pending').first()
-        return jsonify({'id':booking.id})
+        try:
+            data = request.get_json()
+            driver = Driver.query.filter_by(email = data['email']).first()
+            booking = Booking.query.filter_by(driver_id = driver.id, status = 'pending').first()
+            return jsonify({'id':booking.id})
+        except:
+            return jsonify({'message':'error'})
     
     @app.route('/getpending2', methods = ["POST"])
     def getpending2():
@@ -275,16 +294,19 @@ def create_app():
         
     @app.route('/checknodriver',methods = ["POST"])
     def checknodriver():
-        data = request.get_json()
-        ten_minutes_ago = datetime.utcnow() - timedelta(minutes=10)
-        old_bookings = Booking.query.filter(
-            Booking.created_at >= ten_minutes_ago,
-            Booking.user_id == data['userid'],
-            Booking.status == 'driver not available',
-        ).all()
-        if old_bookings:
-            return jsonify({'message':'request is not accepted'})
-        return jsonify({'message':'searching'})
+        try:
+            data = request.get_json()
+            ten_minutes_ago = datetime.utcnow() - timedelta(minutes=1)
+            old_bookings = Booking.query.filter(
+                Booking.created_at >= ten_minutes_ago,
+                Booking.user_id == data['userid'],
+                Booking.status == 'driver not available',
+            ).all()
+            if old_bookings:
+                return jsonify({'message':'request is not accepted'})
+            return jsonify({'message':'searching'})
+        except:
+            return jsonify({'message':'error'})
 
     @app.route('/checknotificationpending', methods = ["POST"])
     def checknotificationpending():
@@ -312,41 +334,71 @@ def create_app():
 
     @app.route('/ridefinish',methods = ["POST"])
     def ridefinish():
-        data = request.get_json()
-        driver = Driver.query.filter_by(email = data['email']).first()
-        booking = Booking.query.filter(Booking.driver_id == driver.id , Booking.status == 'accepted by driver').first()
-        booking.status = 'ride finished'
-        driver.status = 'active'
-        db.session.commit()
-        return jsonify({'message':'success'})
+        try:
+            data = request.get_json()
+            driver = Driver.query.filter_by(email = data['email']).first()
+            booking = Booking.query.filter(Booking.driver_id == driver.driver_id, Booking.status == 'accepted by driver').first()
+            booking.status = 'ride finished'
+            driver.status = 'active'
+            db.session.commit()
+            return jsonify({'message':'success'})
+        except:
+            return jsonify({'message':'error'})
     
     @app.route('/cancelledbydriver', methods = ["POST"])
     def cancelledbydriver():
-        data = request.get_json()
-        driver = Driver.query.filter_by(email = data['email']).first()
-        print(driver.driver_id)
-        booking = Booking.query.filter(Booking.driver_id == driver.driver_id, Booking.status == 'accepted by driver').first()
-        print(booking)
-        cancelledride = CancelledRide(reason = data['reason'], booking_id = booking.id, driver_id = driver.driver_id)
-        driver.status = 'active'
-        booking.status = 'cancelled by driver after accepting'
-        db.session.add(cancelledride)
-        db.session.commit()
-        return jsonify({'message':'ok','driverid':driver.id})
+        try:
+            data = request.get_json()
+            driver = Driver.query.filter_by(email = data['email']).first()
+            print(driver.driver_id)
+            booking = Booking.query.filter(Booking.driver_id == driver.driver_id, Booking.status == 'accepted by driver').first()
+            print(booking)
+            cancelledride = CancelledRide(reason = data['reason'], booking_id = booking.id, driver_id = driver.driver_id)
+            driver.status = 'active'
+            booking.status = 'cancelled by driver after accepting'
+            db.session.add(cancelledride)
+            db.session.commit()
+            return jsonify({'message':'ok','driverid':driver.id})
+        except:
+            return jsonify({'message':'error'})
 
     @app.route('/cancelfromuser', methods = ["POST"])
     def cancelfromuser():
-        data = request.get_json()
-        user = User.query.filter_by(email = data['email']).first()
-        booking = Booking.query.filter(Booking.user_id == user.user_id, Booking.status == 'accepted by driver').first()
-        cancelledride = CancelledRide(reason = data['reason'], booking_id = booking.id, driver_id = booking.driver_id)
-        driver = Driver.query.filter_by(driver_id = booking.driver_id).first()
-        driver.status = 'active'
-        booking.status = 'cancelled by user after accepting'
-        db.session.add(cancelledride)
-        db.session.commit()
-        return jsonify({'message':'ok','driverid':driver.driver_id})
-            
+        try:
+            data = request.get_json()
+            user = User.query.filter_by(email = data['email']).first()
+            booking = Booking.query.filter(Booking.user_id == user.user_id, Booking.status == 'accepted by driver').first()
+            cancelledride = CancelledRide(reason = data['reason'], booking_id = booking.id, driver_id = booking.driver_id)
+            driver = Driver.query.filter_by(driver_id = booking.driver_id).first()
+            driver.status = 'active'
+            booking.status = 'cancelled by user after accepting'
+            db.session.add(cancelledride)
+            db.session.commit()
+            return jsonify({'message':'ok','driverid':driver.driver_id})
+        except:
+            return jsonify({'message':'error'})
+    
+    @app.route('/bookingcount', methods = ["GET"])
+    def bookingcount():
+        try:
+            finished = Booking.query.filter_by(status = 'ride finished').all()
+            cancelled = Booking.query.filter(
+                    or_(Booking.status == 'cancelled by user', Booking.status == 'cancelled by driver')
+                ).all()
+            print(len(cancelled),len(finished))
+            return jsonify({'cancelled':len(cancelled),'accepted':len(finished)})
+        except:
+            return jsonify({'message':'error'})
+        
+    @app.route('/vehicles', methods = ["GET"])
+    def vehicles():
+        try:
+            vehicles = Driver.query.all()
+            inactive = Driver.query.filter_by(status = 'active').all()
+            return jsonify({'total':len(vehicles), 'inactive':len(inactive)})
+        except:
+            return jsonify({'message':'error'})
+
     return app
 
 if __name__ == '__main__':
